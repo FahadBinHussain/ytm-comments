@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { onMounted } from 'vue';
+import { onMounted, reactive } from 'vue';
 import { useReplies } from '@/composables/useReplies';
+import { performCommentAction } from '@/lib/youtubeApi';
+import { isSignedIn } from '@/lib/auth';
 
 const props = defineProps<{ commentId: string; initialToken: string }>();
 const replies = useReplies();
@@ -11,6 +13,51 @@ onMounted(() => {
 
 function thread() {
   return replies.get(props.commentId);
+}
+
+const busyMap = reactive<Record<string, boolean>>({});
+const errorMap = reactive<Record<string, string | null>>({});
+const animMap = reactive<Record<string, boolean>>({});
+
+function adjustLikeCount(current: string, delta: number): string {
+  if (/^\d+$/.test(current.trim())) {
+    const n = parseInt(current.trim(), 10) + delta;
+    return Math.max(0, n).toString();
+  }
+  return current;
+}
+
+async function onLikeReply(r: any) {
+  const id = r.id as string;
+  if (busyMap[id]) return;
+  errorMap[id] = null;
+  if (!r.canLike) {
+    errorMap[id] = !isSignedIn() ? 'Sign in to YouTube to like' : 'Like not available';
+    return;
+  }
+  const prevLiked = !!r.isLiked;
+  const prevCount = r.likeCount as string;
+  const cmd = prevLiked ? r.unlikeCommand : r.likeCommand;
+  if (!cmd) {
+    errorMap[id] = prevLiked ? 'Unlike not available — signed out?' : 'Like not available — signed out?';
+    return;
+  }
+  const nextLiked = !prevLiked;
+  r.isLiked = nextLiked;
+  r.likeCount = adjustLikeCount(prevCount, nextLiked ? 1 : -1);
+  animMap[id] = nextLiked;
+  setTimeout(() => (animMap[id] = false), 300);
+  busyMap[id] = true;
+  try {
+    await performCommentAction(cmd);
+    errorMap[id] = null;
+  } catch (e: any) {
+    r.isLiked = prevLiked;
+    r.likeCount = prevCount;
+    errorMap[id] = e?.message ?? 'Like failed';
+  } finally {
+    busyMap[id] = false;
+  }
 }
 </script>
 
@@ -30,8 +77,21 @@ function thread() {
           </div>
           <div class="text">{{ r.body }}</div>
           <div class="meta">
-            <span class="likes">♥ {{ r.likeCount }}</span>
+            <button
+              type="button"
+              class="like-btn"
+              :class="{ liked: r.isLiked, busy: busyMap[r.id] }"
+              :disabled="!!busyMap[r.id]"
+              :title="r.canLike ? (r.isLiked ? 'Unlike' : 'Like') : 'Sign in to like'"
+              :aria-pressed="r.isLiked"
+              @click="onLikeReply(r)"
+            >
+              <span class="like-icon" :class="{ anim: animMap[r.id] }">{{ r.isLiked ? '♥' : '♡' }}</span>
+              <span>{{ r.likeCount }}</span>
+            </button>
+            <span v-if="busyMap[r.id]" class="like-busy">…</span>
           </div>
+          <div v-if="errorMap[r.id]" class="like-error" role="alert">⚠ {{ errorMap[r.id] }}</div>
         </div>
       </div>
       <button
@@ -91,10 +151,38 @@ function thread() {
   word-break: break-word;
 }
 .meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   font-size: 11px;
   color: rgba(255, 255, 255, 0.5);
   margin-top: 4px;
 }
+.like-btn {
+  appearance: none;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.75);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  transition: background 140ms, color 140ms, transform 140ms, border-color 140ms;
+}
+.like-btn:hover { background: rgba(255,255,255,0.1); color: #fff; transform: translateY(-1px); }
+.like-btn:active { transform: scale(0.97); }
+.like-btn.liked { background: rgba(255,59,92,0.15); border-color: rgba(255,59,92,0.35); color: #ff8da1; }
+.like-btn.liked:hover { background: rgba(255,59,92,0.22); color: #ffbfd0; }
+.like-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.like-icon { display:inline-block; transition: transform 180ms cubic-bezier(0.34,1.56,0.64,1); font-size:12px; }
+.like-icon.anim { transform: scale(1.35); }
+.like-busy { font-size: 10px; color: rgba(255,255,255,0.5); }
+.like-error { margin-top:4px; font-size:10px; color:#ff8a8a; background: rgba(255,80,80,0.08); border:1px solid rgba(255,80,80,0.18); padding:4px 6px; border-radius:6px; }
 .more {
   align-self: flex-start;
   background: transparent;

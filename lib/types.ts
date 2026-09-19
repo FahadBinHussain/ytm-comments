@@ -11,6 +11,11 @@ export interface Comment {
   replyCount: number;
   isHearted: boolean;
   isPinned: boolean;
+  isLiked: boolean;
+  isDisliked: boolean;
+  canLike: boolean;
+  likeCommand: any | null;
+  unlikeCommand: any | null;
   replyContinuation: string | null;
 }
 
@@ -23,6 +28,11 @@ export interface Reply {
   publishedTime: string;
   likeCount: string;
   isHearted: boolean;
+  isLiked: boolean;
+  isDisliked: boolean;
+  canLike: boolean;
+  likeCommand: any | null;
+  unlikeCommand: any | null;
 }
 
 export interface CommentsPage {
@@ -43,5 +53,6 @@ export interface ClientContext {
     hl: string;
     gl: string;
     userAgent?: string;
+    visitorData?: string;
   };
 }
