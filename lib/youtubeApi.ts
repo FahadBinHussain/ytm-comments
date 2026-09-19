@@ -27,6 +27,10 @@ async function loadCachedVisitorData(): Promise<void> {
 async function rememberVisitorData(vd: string): Promise<void> {
   if (_visitorData === vd) return;
   _visitorData = vd;
+  // one-shot: confirms whether /next responses actually carry visitorData at
+  // all. if this never fires, x-goog-visitor-id stays absent forever and
+  // youtube serves the signed-out engagement surface despite valid auth.
+  warnOnce('visitor-captured', `visitorData captured from api response (len ${vd.length}), persisted to ${VISITOR_KEY}`);
   try {
     await storage.setItem(VISITOR_KEY, vd);
   } catch {}
@@ -120,8 +124,14 @@ async function probeAccountMenu(label: string, url: string, context: any, sendAu
       body: JSON.stringify({ context }),
     });
     const text = await res.text();
-    const authed = res.ok && /"logged_in","1"|"logged_in":1/.test(text);
-    console.warn(`[ytm-comments] AUTH PROBE ${label}: status=${res.status} authed=${authed}`);
+    // log the RAW serialization around "logged_in" instead of regex-guessing
+    // the bool form: youtube serializes as "true"/"false" (json) or "1"/"0"
+    // (protojson), and a regex that only matched ":1" turned every probe into
+    // a false negative - the entire "auth is broken" conclusion rested on it.
+    let snippet = '(not found)';
+    const idx = text.indexOf('logged_in');
+    if (idx >= 0) snippet = text.slice(Math.max(0, idx - 10), idx + 40);
+    console.warn(`[ytm-comments] AUTH PROBE ${label}: status=${res.status} hasVisitorId=${!!extra['x-goog-visitor-id']} logged_in=${JSON.stringify(snippet)}`);
   } catch (e) {
     console.warn(`[ytm-comments] AUTH PROBE ${label} threw:`, e);
   }
