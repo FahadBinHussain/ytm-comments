@@ -1,10 +1,39 @@
 import { getClientContext, refreshClientContext } from './clientContext';
-import { getSapisidAuth } from './auth';
+import { getSapisidAuth, getVisitorData } from './auth';
+import { warnOnce } from './log';
+import { storage } from '#imports';
 
 const ENDPOINT = 'https://www.youtube.com/youtubei/v1/next?prettyPrint=false';
 const PERFORM_ENDPOINT = 'https://www.youtube.com/youtubei/v1/comment/perform_comment_action?prettyPrint=false';
 
+// visitor data: youtube serves the anonymous engagement surface (inert
+// innertubeCommand placeholders + "sign in to continue") to requests that
+// carry a valid SAPISIDHASH but no visitor data — yt-dlp/YouTube.js both
+// capture responseContext.visitorData and echo it as X-Goog-Visitor-Id.
+// there is no VISITOR_INFO1_LIVE cookie on music.youtube.com, so the only
+// source is the api response itself, persisted for the next page load.
+const VISITOR_KEY = 'session:ytm-comments-visitor-data' as const;
+let _visitorData: string | null = null;
+let _visitorLoaded = false;
+
+async function loadCachedVisitorData(): Promise<void> {
+  if (_visitorLoaded) return;
+  _visitorLoaded = true;
+  try {
+    _visitorData = (await storage.getItem<string>(VISITOR_KEY)) ?? null;
+  } catch {}
+}
+
+async function rememberVisitorData(vd: string): Promise<void> {
+  if (_visitorData === vd) return;
+  _visitorData = vd;
+  try {
+    await storage.setItem(VISITOR_KEY, vd);
+  } catch {}
+}
+
 async function postRaw(body: object, signal?: AbortSignal): Promise<any> {
+  await loadCachedVisitorData();
   const context = await getClientContext();
   const extra = await buildAuthHeaders();
   const res = await fetch(ENDPOINT, {
@@ -20,7 +49,10 @@ async function postRaw(body: object, signal?: AbortSignal): Promise<any> {
     body: JSON.stringify({ context, ...body }),
   });
   if (!res.ok) throw new Error(`youtube api ${res.status}`);
-  return res.json();
+  const json = await res.json();
+  const vd = json?.responseContext?.visitorData;
+  if (typeof vd === 'string' && vd) void rememberVisitorData(vd);
+  return json;
 }
 
 export async function post(body: object, signal?: AbortSignal): Promise<any> {
@@ -50,19 +82,71 @@ export const fetchWatchNext = (videoId: string, signal?: AbortSignal) =>
 export const fetchContinuation = (continuation: string, signal?: AbortSignal) =>
   post({ continuation }, signal);
 
+// DECISIVE diagnostic: hit an endpoint whose ONLY success condition is valid
+// auth (no body shape to confound the result). distinguishes "auth broken on
+// the wire" (fix hash/cookies) from "auth fine but engagement surface gated
+// cross-origin" (fix request context - route via background worker).
+let _authProbed = false;
+export async function probeAuthState(): Promise<void> {
+  if (_authProbed) return;
+  _authProbed = true;
+  const context = await getClientContext();
+
+  // probe A: same-origin control - music.youtube.com from a music page. no
+  // CORS, cookies guaranteed, no Origin header. if this is ALSO logged_out,
+  // the hash itself is broken and cross-origin is irrelevant.
+  await probeAccountMenu('A same-origin(music)', 'https://music.youtube.com/youtubei/v1/account/account_menu?prettyPrint=false', context, true);
+  // probe B: cross-origin www with the current header set (authuser=0)
+  await probeAccountMenu('B cross-origin(www) authuser=0', 'https://www.youtube.com/youtubei/v1/account/account_menu?prettyPrint=false', context, true);
+  // probe C: cross-origin www WITHOUT x-goog-authuser - in multi-account
+  // profiles authuser=0 can point at an empty slot, which youtube reports as
+  // logged_out even with a valid sid hash.
+  await probeAccountMenu('C cross-origin(www) no-authuser', 'https://www.youtube.com/youtubei/v1/account/account_menu?prettyPrint=false', context, false);
+}
+
+async function probeAccountMenu(label: string, url: string, context: any, sendAuthuser: boolean): Promise<void> {
+  try {
+    const extra = await buildAuthHeaders();
+    if (!sendAuthuser) delete extra['x-goog-authuser'];
+    const res = await fetch(url, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'content-type': 'application/json',
+        'x-youtube-client-name': '1',
+        'x-youtube-client-version': context.client.clientVersion,
+        ...extra,
+      },
+      body: JSON.stringify({ context }),
+    });
+    const text = await res.text();
+    const authed = res.ok && /"logged_in","1"|"logged_in":1/.test(text);
+    console.warn(`[ytm-comments] AUTH PROBE ${label}: status=${res.status} authed=${authed}`);
+  } catch (e) {
+    console.warn(`[ytm-comments] AUTH PROBE ${label} threw:`, e);
+  }
+}
+
 export async function buildAuthHeaders(): Promise<Record<string, string>> {
+  await loadCachedVisitorData();
   const auth = await getSapisidAuth();
   const headers: Record<string, string> = {};
   if (auth) {
     headers['authorization'] = auth;
     headers['x-goog-authuser'] = '0';
   }
-  // visitor id helps youtube route correctly; not required but cheap
-  try {
-    const m = document.cookie.match(/(?:^|; )VISITOR_INFO1_LIVE=([^;]*)/);
-    if (m) headers['x-goog-visitor-id'] = decodeURIComponent(m[1]);
-  } catch {}
-  // ytmusic sometimes expects origin
+  // visitor data: prefer the value captured from a previous api response
+  // (music.youtube.com has no VISITOR_INFO1_LIVE cookie); fall back to the
+  // cookie when present. without this youtube serves the signed-out surface.
+  const vd = _visitorData ?? getVisitorData();
+  if (vd) headers['x-goog-visitor-id'] = vd;
+  // diagnostic only (never log the hash value itself). warnOnce: this fires
+  // on every /next fetch while scrolling, which buried every other signal.
+  warnOnce('request auth headers', {
+    hasAuthorization: !!headers['authorization'],
+    hasVisitorId: !!headers['x-goog-visitor-id'],
+    hasSapisidCookie: typeof document !== 'undefined' && /(?:^|; )SAPISID=/.test(document.cookie),
+  });
   return headers;
 }
 
@@ -87,6 +171,12 @@ export async function performCommentAction(likeCommand: any, signal?: AbortSigna
   const context = await getClientContext();
   const payload = extractActionPayload(likeCommand);
   if (!payload) throw new Error('missing like command payload');
+  warnOnce(
+    'performCommentAction payload',
+    `client ${context.client.clientName} ${context.client.clientVersion}`,
+    'input=', JSON.stringify(likeCommand).slice(0, 1200),
+    'extracted=', JSON.stringify(payload).slice(0, 1200),
+  );
 
   const extra = await buildAuthHeaders();
 
@@ -176,7 +266,6 @@ export async function performFallbackLikeById(commentId: string, unlike: boolean
   let lastErr: string | null = null;
   for (let i = 0; i < variants.length; i++) {
     const body = variants[i];
-    console.warn(`[ytm-comments] fallback like variant ${i + 1}/${variants.length} for ${commentId} ->`, JSON.stringify(body).slice(0, 400));
     const res = await fetch(PERFORM_ENDPOINT, {
       method: 'POST',
       credentials: 'include',
@@ -192,10 +281,12 @@ export async function performFallbackLikeById(commentId: string, unlike: boolean
     if (res.ok) {
       const json = await res.json().catch(() => ({}));
       if (!json?.error) return json;
-      lastErr = `fallback rejected: ${JSON.stringify(json).slice(0, 500)}`;
+      lastErr = `fallback rejected (variant ${i + 1}/${variants.length}): ${JSON.stringify(json).slice(0, 500)}`;
+      warnOnce(`fallback-rejected-${i}`, `fallback variant ${i + 1}/${variants.length} rejected`, json);
     } else {
       const txt = await res.text().catch(() => '');
-      lastErr = `fallback failed ${res.status} ${txt.slice(0, 300)}`;
+      lastErr = `fallback failed ${res.status} ${txt.slice(0, 300)} (variant ${i + 1}/${variants.length})`;
+      warnOnce(`fallback-failed-${i}`, `fallback variant ${i + 1}/${variants.length} failed ${res.status}`, txt.slice(0, 300));
     }
   }
   throw new Error(lastErr ?? 'fallback like failed');

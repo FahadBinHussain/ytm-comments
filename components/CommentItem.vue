@@ -4,6 +4,7 @@ import ReplyList from './ReplyList.vue';
 import type { Comment } from '@/lib/types';
 import { performCommentAction, performFallbackLikeById } from '@/lib/youtubeApi';
 import { isSignedIn } from '@/lib/auth';
+import { warnOnce } from '@/lib/log';
 
 const props = defineProps<{ comment: Comment }>();
 const expanded = ref(false);
@@ -49,8 +50,8 @@ async function onLike() {
   let useFallback = false;
   let cmd: any | null = null;
   if (!canLike.value) {
-    const debug = `canLike=false isSignedIn=${isSignedIn()} hasLike=${!!props.comment.likeCommand} hasUnlike=${!!props.comment.unlikeCommand} isLiked=${props.comment.isLiked} id=${props.comment.id.slice(0,12)}`;
-    console.warn('[ytm-comments] like blocked — attempting FALLBACK synthetic method', debug, props.comment);
+    const debug = `canLike=false isSignedIn=${isSignedIn()} hasLike=${!!props.comment.likeCommand} hasUnlike=${!!props.comment.unlikeCommand} isLiked=${props.comment.isLiked} id=${props.comment.id.slice(0, 12)}`;
+    warnOnce('like-blocked', 'like blocked — attempting FALLBACK synthetic method', debug, 'likeCommand=', JSON.stringify(props.comment.likeCommand), 'unlikeCommand=', JSON.stringify(props.comment.unlikeCommand));
     if (!isSignedIn()) {
       error.value = 'Sign in to YouTube to like — no SAPISID cookie found';
       return;
@@ -63,7 +64,7 @@ async function onLike() {
     cmd = prev ? props.comment.unlikeCommand : props.comment.likeCommand;
     if (!cmd) {
       // also fallback if specific command missing
-      console.warn('[ytm-comments] missing like/unlike command — FALLBACK synthetic', props.comment);
+      warnOnce('missing-like-command', 'missing like/unlike command — FALLBACK synthetic');
       useFallback = true;
       fallbackBadge.value = 'FALLBACK: synthetic commentId method';
     }
