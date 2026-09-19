@@ -1,4 +1,6 @@
 import type { Comment, CommentsPage, RepliesPage, Reply } from './types';
+import { probeAuthState } from './youtubeApi';
+import { warnOnce } from './log';
 
 function collectActions(json: any): any[] {
   const endpoints: any[] = json?.onResponseReceivedEndpoints ?? [];
@@ -135,10 +137,33 @@ function deriveLikeMeta(statePayload: any, surfacePayload: any): { isLiked: bool
     if (!unlikeCommand && surfacePayload.toolbarSurface) unlikeCommand = deepFind(surfacePayload.toolbarSurface, 'unlikeCommand');
     // if account not signed in, youtube returns prepareAccountCommand instead
     const hasPrepare = !!(surfacePayload.prepareAccountCommand ?? deepFind(surfacePayload, 'prepareAccountCommand') ?? surfacePayload.prepare_account_command);
-    if (hasPrepare) {
-      canLike = false;
+    // a present likeCommand/unlikeCommand always wins: youtube returns the real
+    // command alongside prepareAccountCommand for stale/ungated clients, and the
+    // command itself is usable. prepareAccountCommand only gates liking when
+    // there is no command at all (genuinely signed out).
+    if (likeCommand || unlikeCommand) {
+      canLike = true;
+      if (hasPrepare) {
+        warnOnce(
+          'surface-prepare-coexist',
+          'surface has likeCommand + prepareAccountCommand together - letting the command win. surface payload:',
+          JSON.stringify(surfacePayload).slice(0, 2500),
+        );
+      }
+      // gated surface: youtube returns an inert innertubeCommand wrapper
+      // (clickTrackingParams only, no performCommentActionEndpoint) when it
+      // doesn't trust the client/session for engagement actions. log the whole
+      // surface once so the gating reason is visible without a debugger attach.
+      const hasRealEndpoint = !!(likeCommand?.performCommentActionEndpoint ?? unlikeCommand?.performCommentActionEndpoint);
+      if (!hasRealEndpoint) {
+        warnOnce(
+          'surface-gated',
+          'likeCommand present but gated (no performCommentActionEndpoint - inert innertubeCommand placeholder). surface payload:',
+          JSON.stringify(surfacePayload).slice(0, 3000),
+        );
+      }
     } else {
-      canLike = !!(likeCommand || unlikeCommand);
+      canLike = false;
     }
     if (!likeCommand && surfacePayload?.performCommentActionEndpoint) {
       likeCommand = surfacePayload;
@@ -214,29 +239,29 @@ function toCommentFromEntity(entity: any, maps?: EntityMaps, commentIdOverride?:
   };
 }
 
-let _debugLogged = false;
+// --- parse diagnostics -------------------------------------------------------
+// every line goes through warnOnce: edge hides console.debug, and the parse
+// path runs per comment thread, so an unguarded warn floods the console.
+
+let _parseDebugLogged = false;
 export function parseCommentsPage(json: any): CommentsPage {
   const maps = buildEntityMaps(json);
   const actions = collectActions(json);
-  // DEBUG: log first thread keys vs map keys once per page to diagnose "like not available"
-  try {
-    if (!_debugLogged) {
-      _debugLogged = true;
-      const sampleThread = actions.find((a: any) => a?.commentThreadRenderer)?.commentThreadRenderer;
-      const sKey = sampleThread?.commentViewModel?.commentViewModel ?? sampleThread?.commentViewModel;
-      console.debug('[ytm-comments] parse debug sampleThread keys', JSON.stringify(sKey)?.slice(0, 800));
-      console.debug('[ytm-comments] map sizes', { commentById: maps.commentById.size, stateByKey: maps.stateByKey.size, surfaceByKey: maps.surfaceByKey.size });
-      console.debug('[ytm-comments] state keys sample', [...maps.stateByKey.keys()].slice(0, 2));
-      console.debug('[ytm-comments] surface keys sample', [...maps.surfaceByKey.keys()].slice(0, 2));
-      const rawKeys = [...maps.rawMap.keys()].slice(0, 3);
-      console.debug('[ytm-comments] rawMap keys sample', rawKeys);
-      // also dump first surface payload shape
-      const firstSurf = [...maps.surfaceByKey.values()][0];
-      if (firstSurf) console.debug('[ytm-comments] first surface payload preview', JSON.stringify(firstSurf).slice(0, 1200));
-      const firstState = [...maps.stateByKey.values()][0];
-      if (firstState) console.debug('[ytm-comments] first state payload preview', JSON.stringify(firstState).slice(0, 800));
-    }
-  } catch {}
+  void probeAuthState();
+  // one condensed line per session: map sizes + first surface shape. the per-
+  // thread/per-comment detail was flooding the console with hundreds of
+  // near-identical lines while scrolling.
+  if (!_parseDebugLogged) {
+    _parseDebugLogged = true;
+    const firstSurf = [...maps.surfaceByKey.values()][0];
+    warnOnce('parse debug', {
+      commentById: maps.commentById.size,
+      stateByKey: maps.stateByKey.size,
+      surfaceByKey: maps.surfaceByKey.size,
+      rawMap: maps.rawMap.size,
+      firstSurface: firstSurf ? JSON.stringify(firstSurf).slice(0, 1200) : null,
+    });
+  }
 
   const items: Comment[] = [];
   let nextPageToken: string | null = null;
