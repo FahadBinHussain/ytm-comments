@@ -96,6 +96,15 @@ export async function probeAuthState(): Promise<void> {
   _authProbed = true;
   const context = await getClientContext();
 
+  // inventory which session cookies this page can even see - NAMES ONLY,
+  // values are session secrets. if SID/HSID are absent there is no signed-in
+  // youtube session in this cookie jar and no SAPISIDHASH can fix it.
+  if (typeof document !== 'undefined') {
+    const names = ['SID', 'HSID', 'SSID', 'APISID', 'SAPISID', '__Secure-3PAPISID', '__Secure-3PSID', '__Secure-1PSID', 'LOGIN_INFO', 'VISITOR_INFO1_LIVE'];
+    const present = names.filter((n) => new RegExp(`(?:^|; )${n}=`).test(document.cookie));
+    console.warn(`[ytm-comments] AUTH PROBE cookie inventory: ${present.join(', ') || '(none)'}`);
+  }
+
   // probe A: same-origin control - music.youtube.com from a music page. no
   // CORS, cookies guaranteed, no Origin header. if this is ALSO logged_out,
   // the hash itself is broken and cross-origin is irrelevant.
@@ -106,11 +115,21 @@ export async function probeAuthState(): Promise<void> {
   // profiles authuser=0 can point at an empty slot, which youtube reports as
   // logged_out even with a valid sid hash.
   await probeAccountMenu('C cross-origin(www) no-authuser', 'https://www.youtube.com/youtubei/v1/account/account_menu?prettyPrint=false', context, false);
+  // probe D: same-origin, COOKIES ONLY - no authorization header, no visitor
+  // header. a first-party same-site fetch carries the full session cookie set
+  // (SID/HSID/__Secure-3PSID/...) automatically, and youtube authenticates
+  // account_menu on those alone. so:
+  //   D logged_in=1 -> our SAPISIDHASH header is actively downgrading auth
+  //                    (fix: drop the header for same-origin requests)
+  //   D logged_in=0 -> the cookie session itself is dead or absent. no hash
+  //                    in the world fixes that; the profile needs a real
+  //                    sign-in on youtube.com.
+  await probeAccountMenu('D same-origin cookies-only', 'https://music.youtube.com/youtubei/v1/account/account_menu?prettyPrint=false', context, false, true);
 }
 
-async function probeAccountMenu(label: string, url: string, context: any, sendAuthuser: boolean): Promise<void> {
+async function probeAccountMenu(label: string, url: string, context: any, sendAuthuser: boolean, omitAuth = false): Promise<void> {
   try {
-    const extra = await buildAuthHeaders();
+    const extra = omitAuth ? {} : await buildAuthHeaders();
     if (!sendAuthuser) delete extra['x-goog-authuser'];
     const res = await fetch(url, {
       method: 'POST',
@@ -124,14 +143,14 @@ async function probeAccountMenu(label: string, url: string, context: any, sendAu
       body: JSON.stringify({ context }),
     });
     const text = await res.text();
-    // log the RAW serialization around "logged_in" instead of regex-guessing
-    // the bool form: youtube serializes as "true"/"false" (json) or "1"/"0"
-    // (protojson), and a regex that only matched ":1" turned every probe into
-    // a false negative - the entire "auth is broken" conclusion rested on it.
+    // youtube serializes this as {"key":"logged_in","value":"0"} - parse the
+    // real value, and keep the raw snippet as backup in case the shape drifts.
+    const m = text.match(/"key":\s*"logged_in"[^}]*?"value":\s*"([^"]*)"/);
+    const loggedIn = m ? m[1] : '(unknown)';
     let snippet = '(not found)';
     const idx = text.indexOf('logged_in');
     if (idx >= 0) snippet = text.slice(Math.max(0, idx - 10), idx + 40);
-    console.warn(`[ytm-comments] AUTH PROBE ${label}: status=${res.status} hasVisitorId=${!!extra['x-goog-visitor-id']} logged_in=${JSON.stringify(snippet)}`);
+    console.warn(`[ytm-comments] AUTH PROBE ${label}: status=${res.status} logged_in=${JSON.stringify(loggedIn)} hasVisitorId=${!!extra['x-goog-visitor-id']} raw=${JSON.stringify(snippet)}`);
   } catch (e) {
     console.warn(`[ytm-comments] AUTH PROBE ${label} threw:`, e);
   }
