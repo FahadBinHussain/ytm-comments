@@ -2,7 +2,7 @@
 import { ref, computed, watch } from 'vue';
 import ReplyList from './ReplyList.vue';
 import type { Comment } from '@/lib/types';
-import { performCommentAction } from '@/lib/youtubeApi';
+import { performCommentAction, performFallbackLikeById } from '@/lib/youtubeApi';
 import { isSignedIn } from '@/lib/auth';
 
 const props = defineProps<{ comment: Comment }>();
@@ -13,6 +13,7 @@ const isLiked = ref(props.comment.isLiked);
 const likeCount = ref(props.comment.likeCount);
 const canLike = computed(() => props.comment.canLike);
 const likedAnim = ref(false);
+const fallbackBadge = ref<string | null>(null);
 
 watch(() => props.comment.isLiked, (v) => (isLiked.value = v));
 watch(() => props.comment.likeCount, (v) => (likeCount.value = v));
@@ -44,40 +45,60 @@ function adjustLikeCount(current: string, delta: number): string {
 async function onLike() {
   if (busy.value) return;
   error.value = null;
+  fallbackBadge.value = null;
+  let useFallback = false;
+  let cmd: any | null = null;
   if (!canLike.value) {
+    const debug = `canLike=false isSignedIn=${isSignedIn()} hasLike=${!!props.comment.likeCommand} hasUnlike=${!!props.comment.unlikeCommand} isLiked=${props.comment.isLiked} id=${props.comment.id.slice(0,12)}`;
+    console.warn('[ytm-comments] like blocked — attempting FALLBACK synthetic method', debug, props.comment);
     if (!isSignedIn()) {
-      error.value = 'Sign in to YouTube to like comments';
-    } else {
-      error.value = 'Like not available for this comment';
+      error.value = 'Sign in to YouTube to like — no SAPISID cookie found';
+      return;
     }
-    return;
+    // LOUD fallback: synthetic commentId method (not primary surface command)
+    useFallback = true;
+    fallbackBadge.value = 'FALLBACK: synthetic commentId method';
+  } else {
+    const prev = isLiked.value;
+    cmd = prev ? props.comment.unlikeCommand : props.comment.likeCommand;
+    if (!cmd) {
+      // also fallback if specific command missing
+      console.warn('[ytm-comments] missing like/unlike command — FALLBACK synthetic', props.comment);
+      useFallback = true;
+      fallbackBadge.value = 'FALLBACK: synthetic commentId method';
+    }
   }
   const prevLiked = isLiked.value;
   const prevCount = likeCount.value;
-  const cmd = prevLiked ? props.comment.unlikeCommand : props.comment.likeCommand;
-  if (!cmd) {
-    error.value = prevLiked ? 'Unlike action not available — you may be signed out' : 'Like action not available — you may be signed out';
-    return;
+  if (!useFallback) {
+    cmd = prevLiked ? props.comment.unlikeCommand : props.comment.likeCommand;
+    if (!cmd) {
+      error.value = prevLiked ? 'Unlike action not available — you may be signed out' : 'Like action not available — you may be signed out';
+      return;
+    }
   }
   // optimistic
   const nextLiked = !prevLiked;
   isLiked.value = nextLiked;
   likeCount.value = adjustLikeCount(prevCount, nextLiked ? 1 : -1);
-  // keep source in sync (since parent reactive array holds same object)
   props.comment.isLiked = nextLiked;
   props.comment.likeCount = likeCount.value;
   likedAnim.value = nextLiked;
   setTimeout(() => (likedAnim.value = false), 300);
   busy.value = true;
   try {
-    await performCommentAction(cmd);
+    if (useFallback) {
+      await performFallbackLikeById(props.comment.id, prevLiked);
+    } else {
+      await performCommentAction(cmd);
+    }
     error.value = null;
   } catch (e: any) {
-    // rollback LOUDLY — no silent fallback
     isLiked.value = prevLiked;
     likeCount.value = prevCount;
     props.comment.isLiked = prevLiked;
     props.comment.likeCount = prevCount;
+    fallbackBadge.value = null;
     error.value = e?.message ?? 'Like failed';
   } finally {
     busy.value = false;
@@ -123,6 +144,7 @@ async function onLike() {
         </button>
         <span v-if="busy" class="like-busy">…</span>
       </div>
+      <div v-if="fallbackBadge" class="fallback-badge">⚠ {{ fallbackBadge }}</div>
       <div v-if="error" class="like-error" role="alert">⚠ {{ error }}</div>
       <ReplyList
         v-if="expanded && comment.replyContinuation"
@@ -217,6 +239,16 @@ async function onLike() {
   border: 1px solid rgba(255, 80, 80, 0.18);
   padding: 6px 8px;
   border-radius: 6px;
+}
+.fallback-badge {
+  margin-top: 6px;
+  font-size: 10px;
+  color: #ffcc00;
+  background: rgba(255, 204, 0, 0.12);
+  border: 1px solid rgba(255, 204, 0, 0.3);
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-weight: 600;
 }
 .replies-toggle {
   appearance: none;

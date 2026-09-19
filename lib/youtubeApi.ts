@@ -6,6 +6,7 @@ const PERFORM_ENDPOINT = 'https://www.youtube.com/youtubei/v1/comment/perform_co
 
 async function postRaw(body: object, signal?: AbortSignal): Promise<any> {
   const context = await getClientContext();
+  const extra = await buildAuthHeaders();
   const res = await fetch(ENDPOINT, {
     method: 'POST',
     credentials: 'include',
@@ -14,6 +15,7 @@ async function postRaw(body: object, signal?: AbortSignal): Promise<any> {
       'content-type': 'application/json',
       'x-youtube-client-name': '1',
       'x-youtube-client-version': context.client.clientVersion,
+      ...extra,
     },
     body: JSON.stringify({ context, ...body }),
   });
@@ -48,7 +50,7 @@ export const fetchWatchNext = (videoId: string, signal?: AbortSignal) =>
 export const fetchContinuation = (continuation: string, signal?: AbortSignal) =>
   post({ continuation }, signal);
 
-async function buildAuthHeaders(): Promise<Record<string, string>> {
+export async function buildAuthHeaders(): Promise<Record<string, string>> {
   const auth = await getSapisidAuth();
   const headers: Record<string, string> = {};
   if (auth) {
@@ -157,4 +159,44 @@ export async function toggleLike(comment: { isLiked: boolean; likeCommand: any; 
   const cmd = comment.isLiked ? comment.unlikeCommand : comment.likeCommand;
   if (!cmd) throw new Error(comment.isLiked ? 'unlike not available — are you signed in?' : 'like not available — are you signed in?');
   return performCommentAction(cmd);
+}
+
+// fallback synthetic like via commentId when surface command missing (debug aid — shows loud fallback badge)
+// tries naive shapes; if youtube changes proto this will 4xx and surface loud error with variant count
+export async function performFallbackLikeById(commentId: string, unlike: boolean, signal?: AbortSignal): Promise<any> {
+  const context = await getClientContext();
+  const extra = await buildAuthHeaders();
+  const actionName = unlike ? 'ACTION_UNLIKE_COMMENT' : 'ACTION_LIKE_COMMENT';
+  const variants: any[] = [
+    { context, actions: [actionName], commentId },
+    { context, action: actionName, commentId },
+    { context, commentId, action: actionName },
+    { context, actions: [{ action: actionName, commentId }] },
+  ];
+  let lastErr: string | null = null;
+  for (let i = 0; i < variants.length; i++) {
+    const body = variants[i];
+    console.warn(`[ytm-comments] fallback like variant ${i + 1}/${variants.length} for ${commentId} ->`, JSON.stringify(body).slice(0, 400));
+    const res = await fetch(PERFORM_ENDPOINT, {
+      method: 'POST',
+      credentials: 'include',
+      signal,
+      headers: {
+        'content-type': 'application/json',
+        'x-youtube-client-name': '1',
+        'x-youtube-client-version': context.client.clientVersion,
+        ...extra,
+      },
+      body: JSON.stringify(body),
+    });
+    if (res.ok) {
+      const json = await res.json().catch(() => ({}));
+      if (!json?.error) return json;
+      lastErr = `fallback rejected: ${JSON.stringify(json).slice(0, 500)}`;
+    } else {
+      const txt = await res.text().catch(() => '');
+      lastErr = `fallback failed ${res.status} ${txt.slice(0, 300)}`;
+    }
+  }
+  throw new Error(lastErr ?? 'fallback like failed');
 }

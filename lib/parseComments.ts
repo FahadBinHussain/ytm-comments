@@ -101,11 +101,25 @@ function findSurfaceForComment(maps: EntityMaps, commentId: string): any | null 
   return null;
 }
 
+function deepFind(obj: any, targetKey: string, depth = 0): any | null {
+  if (!obj || typeof obj !== 'object' || depth > 4) return null;
+  if (targetKey in obj) return (obj as any)[targetKey];
+  for (const v of Object.values(obj)) {
+    if (v && typeof v === 'object') {
+      const found = deepFind(v, targetKey, depth + 1);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
 function deriveLikeMeta(statePayload: any, surfacePayload: any): { isLiked: boolean; isDisliked: boolean; likeCommand: any | null; unlikeCommand: any | null; canLike: boolean } {
   let isLiked = false;
   let isDisliked = false;
-  if (statePayload) {
-    const ls = statePayload.likeState ?? statePayload?.toolbarState?.likeState;
+  // deep search for likeState in case it's nested
+  const rawLikeState = statePayload ? (statePayload.likeState ?? deepFind(statePayload, 'likeState') ?? statePayload?.toolbarState?.likeState) : null;
+  if (rawLikeState) {
+    const ls = rawLikeState;
     if (ls === 'TOOLBAR_LIKE_STATE_LIKED' || ls === 'LIKED' || ls === 1) isLiked = true;
     else if (ls === 'TOOLBAR_LIKE_STATE_DISLIKED' || ls === 'DISLIKED') isDisliked = true;
   }
@@ -113,27 +127,29 @@ function deriveLikeMeta(statePayload: any, surfacePayload: any): { isLiked: bool
   let unlikeCommand: any | null = null;
   let canLike = false;
   if (surfacePayload) {
-    // surface may have various casings
-    likeCommand = surfacePayload.likeCommand ?? surfacePayload.like_command ?? surfacePayload?.toolbarSurface?.likeCommand ?? null;
-    unlikeCommand = surfacePayload.unlikeCommand ?? surfacePayload.unlike_command ?? surfacePayload?.toolbarSurface?.unlikeCommand ?? null;
+    // surface may have various casings / nestings — deepFind ensures we find it even if wrapped
+    likeCommand = surfacePayload.likeCommand ?? deepFind(surfacePayload, 'likeCommand') ?? surfacePayload.like_command ?? deepFind(surfacePayload, 'like_command') ?? null;
+    unlikeCommand = surfacePayload.unlikeCommand ?? deepFind(surfacePayload, 'unlikeCommand') ?? surfacePayload.unlike_command ?? deepFind(surfacePayload, 'unlike_command') ?? null;
+    // also try toolbarSurface wrapper
+    if (!likeCommand && surfacePayload.toolbarSurface) likeCommand = deepFind(surfacePayload.toolbarSurface, 'likeCommand');
+    if (!unlikeCommand && surfacePayload.toolbarSurface) unlikeCommand = deepFind(surfacePayload.toolbarSurface, 'unlikeCommand');
     // if account not signed in, youtube returns prepareAccountCommand instead
-    const hasPrepare = !!(surfacePayload.prepareAccountCommand ?? surfacePayload.prepare_account_command);
+    const hasPrepare = !!(surfacePayload.prepareAccountCommand ?? deepFind(surfacePayload, 'prepareAccountCommand') ?? surfacePayload.prepare_account_command);
     if (hasPrepare) {
       canLike = false;
-      // treat likeCommand as null when not signed in to force disabled state; but we keep raw for debug
     } else {
       canLike = !!(likeCommand || unlikeCommand);
-      // some responses only include likeCommand when not liked, and unlikeCommand when liked
-      // if isLiked and only likeCommand present, unlikeCommand may be in state? we keep whatever we have
     }
-    // also fallback: surface may directly be the command itself (unlikely)
     if (!likeCommand && surfacePayload?.performCommentActionEndpoint) {
-      // heuristic: if payload looks like it is a command, treat as likeCommand
+      likeCommand = surfacePayload;
+      canLike = true;
+    }
+    // final fallback: if surface itself looks like an endpoint with action
+    if (!likeCommand && surfacePayload?.action && surfacePayload?.actions) {
       likeCommand = surfacePayload;
       canLike = true;
     }
   }
-  // normalize isLiked fallback from surface if state missing: presence of unlikeCommand often means already liked
   if (!statePayload && surfacePayload) {
     if (unlikeCommand && !likeCommand) isLiked = true;
   }
@@ -198,9 +214,29 @@ function toCommentFromEntity(entity: any, maps?: EntityMaps, commentIdOverride?:
   };
 }
 
+let _debugLogged = false;
 export function parseCommentsPage(json: any): CommentsPage {
   const maps = buildEntityMaps(json);
   const actions = collectActions(json);
+  // DEBUG: log first thread keys vs map keys once per page to diagnose "like not available"
+  try {
+    if (!_debugLogged) {
+      _debugLogged = true;
+      const sampleThread = actions.find((a: any) => a?.commentThreadRenderer)?.commentThreadRenderer;
+      const sKey = sampleThread?.commentViewModel?.commentViewModel ?? sampleThread?.commentViewModel;
+      console.debug('[ytm-comments] parse debug sampleThread keys', JSON.stringify(sKey)?.slice(0, 800));
+      console.debug('[ytm-comments] map sizes', { commentById: maps.commentById.size, stateByKey: maps.stateByKey.size, surfaceByKey: maps.surfaceByKey.size });
+      console.debug('[ytm-comments] state keys sample', [...maps.stateByKey.keys()].slice(0, 2));
+      console.debug('[ytm-comments] surface keys sample', [...maps.surfaceByKey.keys()].slice(0, 2));
+      const rawKeys = [...maps.rawMap.keys()].slice(0, 3);
+      console.debug('[ytm-comments] rawMap keys sample', rawKeys);
+      // also dump first surface payload shape
+      const firstSurf = [...maps.surfaceByKey.values()][0];
+      if (firstSurf) console.debug('[ytm-comments] first surface payload preview', JSON.stringify(firstSurf).slice(0, 1200));
+      const firstState = [...maps.stateByKey.values()][0];
+      if (firstState) console.debug('[ytm-comments] first state payload preview', JSON.stringify(firstState).slice(0, 800));
+    }
+  } catch {}
 
   const items: Comment[] = [];
   let nextPageToken: string | null = null;
