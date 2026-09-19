@@ -20,7 +20,13 @@ web-ext.config.ts
 .idea
 .DS_Store
 *.suo
-*.ntvs*
+*.ntjsproj
 *.njsproj
 *.sln
 *.sw?
+
+# dev-only reloader (local unpacked reload loop, not part of the extension)
+entrypoints/background.ts
+public/reload.html
+public/reload.js
+tools/
