@@ -2,7 +2,7 @@
   "name": "ytm-comments",
   "description": "Read YouTube comments inline on music.youtube.com",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "license": "MIT",
   "author": "andronedev",
   "repository": {

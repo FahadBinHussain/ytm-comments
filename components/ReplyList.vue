@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, reactive } from 'vue';
 import { useReplies } from '@/composables/useReplies';
-import { performCommentAction } from '@/lib/youtubeApi';
+import { performCommentAction, performFallbackLikeById } from '@/lib/youtubeApi';
 import { isSignedIn } from '@/lib/auth';
 
 const props = defineProps<{ commentId: string; initialToken: string }>();
@@ -18,6 +18,7 @@ function thread() {
 const busyMap = reactive<Record<string, boolean>>({});
 const errorMap = reactive<Record<string, string | null>>({});
 const animMap = reactive<Record<string, boolean>>({});
+const fallbackMap = reactive<Record<string, string | null>>({});
 
 function adjustLikeCount(current: string, delta: number): string {
   if (/^\d+$/.test(current.trim())) {
@@ -31,16 +32,24 @@ async function onLikeReply(r: any) {
   const id = r.id as string;
   if (busyMap[id]) return;
   errorMap[id] = null;
+  fallbackMap[id] = null;
+  let useFallback = false;
   if (!r.canLike) {
-    errorMap[id] = !isSignedIn() ? 'Sign in to YouTube to like' : 'Like not available';
-    return;
+    console.warn('[ytm-comments] reply like blocked — FALLBACK synthetic', `canLike=${r.canLike} isSignedIn=${isSignedIn()} hasLike=${!!r.likeCommand} id=${id.slice(0, 12)}`, r);
+    if (!isSignedIn()) {
+      errorMap[id] = 'Sign in to YouTube to like — no SAPISID cookie found';
+      return;
+    }
+    useFallback = true;
+    fallbackMap[id] = 'FALLBACK: synthetic commentId method';
   }
   const prevLiked = !!r.isLiked;
   const prevCount = r.likeCount as string;
   const cmd = prevLiked ? r.unlikeCommand : r.likeCommand;
-  if (!cmd) {
-    errorMap[id] = prevLiked ? 'Unlike not available — signed out?' : 'Like not available — signed out?';
-    return;
+  if (!useFallback && !cmd) {
+    console.warn('[ytm-comments] reply missing like command — FALLBACK synthetic', r);
+    useFallback = true;
+    fallbackMap[id] = 'FALLBACK: synthetic commentId method';
   }
   const nextLiked = !prevLiked;
   r.isLiked = nextLiked;
@@ -49,11 +58,16 @@ async function onLikeReply(r: any) {
   setTimeout(() => (animMap[id] = false), 300);
   busyMap[id] = true;
   try {
-    await performCommentAction(cmd);
+    if (useFallback) {
+      await performFallbackLikeById(id, prevLiked);
+    } else {
+      await performCommentAction(cmd);
+    }
     errorMap[id] = null;
   } catch (e: any) {
     r.isLiked = prevLiked;
     r.likeCount = prevCount;
+    fallbackMap[id] = null;
     errorMap[id] = e?.message ?? 'Like failed';
   } finally {
     busyMap[id] = false;
@@ -91,6 +105,7 @@ async function onLikeReply(r: any) {
             </button>
             <span v-if="busyMap[r.id]" class="like-busy">…</span>
           </div>
+          <div v-if="fallbackMap[r.id]" class="fallback-badge">⚠ {{ fallbackMap[r.id] }}</div>
           <div v-if="errorMap[r.id]" class="like-error" role="alert">⚠ {{ errorMap[r.id] }}</div>
         </div>
       </div>
@@ -183,6 +198,7 @@ async function onLikeReply(r: any) {
 .like-icon.anim { transform: scale(1.35); }
 .like-busy { font-size: 10px; color: rgba(255,255,255,0.5); }
 .like-error { margin-top:4px; font-size:10px; color:#ff8a8a; background: rgba(255,80,80,0.08); border:1px solid rgba(255,80,80,0.18); padding:4px 6px; border-radius:6px; }
+.fallback-badge { margin-top:4px; font-size:9px; color:#ffcc00; background: rgba(255,204,0,0.12); border:1px solid rgba(255,204,0,0.3); padding:3px 6px; border-radius:6px; font-weight:600; }
 .more {
   align-self: flex-start;
   background: transparent;
