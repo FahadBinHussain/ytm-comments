@@ -8,10 +8,27 @@ import { useVideoId } from '@/composables/useVideoId';
 import { useComments } from '@/composables/useComments';
 import { useReplies } from '@/composables/useReplies';
 import { usePlayerBarButton } from '@/composables/usePlayerBarButton';
+import { warnOnce } from '@/lib/log';
 
 const ctx = inject<ContentScriptContext>('ctx')!;
 const { videoId, pathname } = useVideoId(ctx);
 const isWatchPage = computed(() => pathname.value === '/watch' && !!videoId.value);
+
+// visibility failures are silent by design (button just gets display:none) —
+// surface them once so "icon vanished" traces to url detection vs dom anchor
+watch(
+  [pathname, videoId],
+  ([p, v]) => {
+    warnOnce(`nav ${p}`, `pathname=${p} videoId=${v || '(none)'}`);
+    if (p === '/watch' && !v) {
+      warnOnce('watch-no-video-id', 'on /watch but no ?v= param — comments button hidden. href=', location.href);
+    }
+    if (p !== '/watch' && new URLSearchParams(location.search).has('v')) {
+      warnOnce('watch-path-changed', `video id present but pathname is not /watch — yt music may have changed the route. pathname=${p} href=`, location.href);
+    }
+  },
+  { immediate: true },
+);
 
 const open = ref(false);
 const { state, loadMore, setSort } = useComments(videoId, isWatchPage);
