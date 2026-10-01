@@ -13,6 +13,15 @@
 - debug: **all diagnostics go through `lib/log.ts` `warnOnce(key, ...)`** — each key logs once per page load. edge hides `console.debug` by default, and the parse path runs per comment thread, so an unguarded `console.warn` floods the console within one scroll (the gated-surface warn alone fired ~20 times per page). keys in use: `request auth headers`, `AUTH PROBE <label>` (`probeAuthState`, one-shot via `_authProbed`), `parse debug`, `surface-gated`, `surface-prepare-coexist`, `performCommentAction payload`, `like-blocked` / `reply-like-blocked`, `ctx-harvest-*`. check these in the music.youtube.com tab console (page console, not the extension popup) when like misbehaves.
 - **chrome.storage.local is a dead diagnostic transport here**: `browser.storage.local.set` succeeds but edge's leveldb (`User Data/Default/Local Extension Settings/<id>/000003.log`) never flushed to disk — the file stayed 0 bytes for hours, even across extension reloads. do not bring back the `ytmDebugParse`/`ytmDebugLike` stash; console pastes are the only channel that works.
 
+## innertube landscape (checked 2026-09-19)
+
+- upstream `andronedev/ytm-comments` is **dead** — last commit 2026-05-24 (store listing docs), 0 issues, 0 PRs ever. never check it again for fixes; our fork is the only active one.
+- `LuanRT/YouTube.js` (reference innertube impl, v18.1.0 as of 2026-09-22) confirms our auth approach is still current: `HTTPClient` sends exactly `Authorization: SAPISIDHASH` from the `SAPISID` cookie + `X-Goog-Visitor-Id` + `X-Goog-Authuser` (`account_index`, we hardcode 0) + `credentials: 'include'`. two deltas worth knowing: (1) it now appends `alt=json` to every innertube URL (`prettyPrint=false&alt=json`) — changes response serialization to plain JSON, which is how `logged_in` shows as a real bool instead of `{"key":...,"value":...}` pairs; (2) `Actions.execute` normalizes `action` -> `actions: [action]`, same as our variant-2/3 bodies — our body shapes match YouTube.js behavior.
+- YouTube.js PR #1248 (`feat: BotGuardManager`, open, unmerged) adds attestation plumbing (`/att/get`, `RunAttestationCommand`, `eacr_token`) — targets YouTube Studio Web actions, NOT comment engagement, and not on main. if comment liking ever gets attestation-gated, that PR + `LuanRT/BgUtils` is the reference. do not implement attestation preemptively.
+- the ViewModel + mutations comment architecture (`commentViewModel.commentKey` -> `frameworkUpdates.entityBatchUpdate.mutations[].entityKey` join) has been current since ~Apr 2026 and is what `buildEntityMaps()` already does — not a new break.
+
+
+
 ## windows / pnpm quirks
 
 - `pnpm install` on this machine fails with `[ERR_PNPM_IGNORED_BUILDS] esbuild` due to ignored-builds policy. don't run `pnpm install` before compile. use `npx vue-tsc --noEmit` and `npx wxt build` directly — they succeed without install. if you must install, run `pnpm install --ignore-scripts` or approve builds, but CI doesn't need it.
