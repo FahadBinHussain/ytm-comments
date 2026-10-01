@@ -31,6 +31,7 @@
 
 - version is derived from `package.json:version`. bump it (patch for fixes, minor for features like like support) in same commit as code — tampermonkey/browser update checks only fire on higher version.
 
-## fragile file
+## fragile files
 
 - `lib/parseComments.ts` — yt reshapes `frameworkUpdates` paths a few times a year. keep `?.` chains and fallback brute-force `includes(commentId)` check.
+- `composables/usePlayerBarButton.ts` — the icon anchor `.middle-controls-buttons > ytmusic-menu-renderer` is fragile twice over: the menu renderer sits in `template is="dom-if" if="[[currentItem.menu]]"` (vanishes when yt stops serving menu data), and `isMiniplayerEnabled` swaps the whole top bar for the lit `ytmusic-miniplayer` (no middle-controls-buttons at all). `placeButton()` walks 4 ordered anchors (menu -> like button -> middle-controls-buttons -> `.ytMusicMiniPlayerActionBar`) and logs each non-primary strategy loudly; total failure logs observed DOM structure. against a yt update: re-download `https://music.youtube.com/s/<hash>/music_polymer_inlined_html.js` (hash from the homepage html) and grep for the anchor classes before touching selectors.
