@@ -49,3 +49,8 @@
 
 - `lib/parseComments.ts` — yt reshapes `frameworkUpdates` paths a few times a year. keep `?.` chains and fallback brute-force `includes(commentId)` check.
 - **button click isolation** (2026-10-01): with the miniplayer anchor our button lands inside yt's `ytVideoActionBarViewModelHost` — an unhandled click bubbling into it triggers yt's router store subscription (`music_polymer_inlined_html.js` `WZ`) which `pushState('/')` within ~1ms, kicking the page off `/watch`. the click listener therefore lives on the `yt-button-shape` (covers inner-button AND shape-padding clicks) and calls `stopPropagation()` — moving it back to the inner button re-opens that hole. symptom if broken: page navigates home right after clicking the comments icon.
+
+## git
+
+- cherry-picks between the icon branch and the like branch always conflict on `package.json` (the version line) and `AGENTS.md`. resolve with `git checkout --theirs -- <file>` — the incoming side already carries the right version — then `git -c core.editor=true cherry-pick --continue`. never hand-edit around conflict markers; a `-replace` that only swapped the version line once shipped nested markers into a whole test branch and the picks had to be redone.
+- in powershell a multi-line `git log --format=%B` result becomes an array, and `git commit -m $array` sends each line (including empty ones) as a pathspec — fatal. rely on `cherry-pick --continue`, which reuses the original message.
