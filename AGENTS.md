@@ -21,7 +21,20 @@
 - YouTube.js PR #1248 (`feat: BotGuardManager`, open, unmerged) adds attestation plumbing (`/att/get`, `RunAttestationCommand`, `eacr_token`) — targets YouTube Studio Web actions, NOT comment engagement, and not on main. if comment liking ever gets attestation-gated, that PR + `LuanRT/BgUtils` is the reference. do not implement attestation preemptively.
 - the ViewModel + mutations comment architecture (`commentViewModel.commentKey` -> `frameworkUpdates.entityBatchUpdate.mutations[].entityKey` join) has been current since ~Apr 2026 and is what `buildEntityMaps()` already does — not a new break.
 
+## comments icon anchor (fragile)
 
+- `composables/usePlayerBarButton.ts` injects the icon into the player bar. the primary anchor `.middle-controls-buttons > ytmusic-menu-renderer` broke in the 2026-09 yt music update twice over: the menu renderer now sits in `template is="dom-if" if="[[currentItem.menu]]"` (never stamps when yt stops serving menu data), and `isMiniplayerEnabled` can swap the whole top bar for the lit `ytmusic-miniplayer` (no middle-controls-buttons at all).
+- `placeButton()` walks 4 ordered anchors: menu renderer -> like button (unconditional sibling) -> middle-controls-buttons -> `.ytMusicMiniPlayerActionBar`. non-primary strategies log loudly once and stamp `data-ytm-anchor-strategy` on the host; total failure logs the observed DOM structure instead of staying silent.
+- against a future yt update: download the live bundle (`https://music.youtube.com/s/<hash>/music_polymer_inlined_html.js`, hash in the homepage html), grep for the anchor classes, and only then touch the selectors.
+
+## client context
+
+- `lib/clientContext.ts` harvests `INNERTUBE_CONTEXT` from the current origin's own page (same-origin, no CORS) instead of the www.youtube.com homepage, which is CORS-blocked from a music content script. extraction walks balanced braces — a non-greedy regex truncates on nested `}` and silently kills JSON.parse.
+- the music page serves `WEB_REMIX` (`1.YYYYMMDD.XX.XX`); comment threads are only served to `WEB` (`2.YYYYMMDD.XX.XX`), so the harvest rewrites the name and keeps the date with the canonical `.00.00` build. never serve the hardcoded `2.20240101.00.00` fallback on a cold read path — a stale client version makes yt drop comment framework updates.
+
+## logging
+
+- all diagnostics go through `lib/log.ts` `warnOnce(key, ...)` — each key logs once per page load. edge hides `console.debug` by default, and the parse path runs per comment thread, so an unguarded `console.warn` floods the console within one scroll.
 
 ## windows / pnpm quirks
 
@@ -35,5 +48,9 @@
 ## fragile files
 
 - `lib/parseComments.ts` — yt reshapes `frameworkUpdates` paths a few times a year. keep `?.` chains and fallback brute-force `includes(commentId)` check.
-- `composables/usePlayerBarButton.ts` — the icon anchor `.middle-controls-buttons > ytmusic-menu-renderer` is fragile twice over: the menu renderer sits in `template is="dom-if" if="[[currentItem.menu]]"` (vanishes when yt stops serving menu data), and `isMiniplayerEnabled` swaps the whole top bar for the lit `ytmusic-miniplayer` (no middle-controls-buttons at all). `placeButton()` walks 4 ordered anchors (menu -> like button -> middle-controls-buttons -> `.ytMusicMiniPlayerActionBar`) and logs each non-primary strategy loudly; total failure logs observed DOM structure. against a yt update: re-download `https://music.youtube.com/s/<hash>/music_polymer_inlined_html.js` (hash from the homepage html) and grep for the anchor classes before touching selectors.
 - **button click isolation** (2026-10-01): with the miniplayer anchor our button lands inside yt's `ytVideoActionBarViewModelHost` — an unhandled click bubbling into it triggers yt's router store subscription (`music_polymer_inlined_html.js` `WZ`) which `pushState('/')` within ~1ms, kicking the page off `/watch`. the click listener therefore lives on the `yt-button-shape` (covers inner-button AND shape-padding clicks) and calls `stopPropagation()` — moving it back to the inner button re-opens that hole. symptom if broken: page navigates home right after clicking the comments icon.
+
+## git
+
+- cherry-picks between the icon branch and the like branch always conflict on `package.json` (the version line) and `AGENTS.md`. resolve with `git checkout --theirs -- <file>` — the incoming side already carries the right version — then `git -c core.editor=true cherry-pick --continue`. never hand-edit around conflict markers; a `-replace` that only swapped the version line once shipped nested markers into a whole test branch and the picks had to be redone.
+- in powershell a multi-line `git log --format=%B` result becomes an array, and `git commit -m $array` sends each line (including empty ones) as a pathspec — fatal. rely on `cherry-pick --continue`, which reuses the original message.
