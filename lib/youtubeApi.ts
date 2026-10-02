@@ -184,9 +184,14 @@ function extractActionPayload(cmd: any): any {
   // cmd may be raw endpoint payload stored from surface entity
   // shapes seen:
   // { clickTrackingParams, commandMetadata: { webCommandMetadata: { apiUrl } }, performCommentActionEndpoint: { action, ... } }
+  // { innertubeCommand: { clickTrackingParams, commandMetadata, performCommentActionEndpoint } }  <- surface entity wraps it
   // { performCommentActionEndpoint: {...} }
   // { action, actions, clientActionsParam, ... }
   // we want the innertube usable payload without metadata
+  // the surface entity stores the WHOLE command wrapped in innertubeCommand;
+  // unwrapping is required or the request body contains a key the endpoint
+  // schema does not know and youtube answers 400 INVALID_ARGUMENT.
+  if (cmd.innertubeCommand) return extractActionPayload(cmd.innertubeCommand);
   if (cmd.performCommentActionEndpoint) return { ...cmd, performCommentActionEndpoint: cmd.performCommentActionEndpoint };
   // if it's already the inner payload
   if (cmd.action || cmd.actions) return cmd;
@@ -209,25 +214,31 @@ export async function performCommentAction(likeCommand: any, signal?: AbortSigna
 
   const extra = await buildAuthHeaders();
 
-  // build up to 3 body variants to handle payload shape drift — no silent fallback, each variant tried visibly
+  // body variants, PRIMARY FIRST: youtube's own perform_comment_action body
+  // is the endpoint payload with action normalized to actions[] — confirmed
+  // 2026-10-01 (the endpoint-wrapped spread answers 400 INVALID_ARGUMENT).
+  // kept as visible shape-drift probes per no-silent-fallback rule.
   const variants: any[] = [];
-  // variant 1: raw spread (most likely matches YouTube.js command wrapper)
-  variants.push({ context, ...payload });
-  // variant 2: inner endpoint only + clickTrackingParams
   if (payload.performCommentActionEndpoint) {
     const inner = payload.performCommentActionEndpoint;
-    const v2: any = { context, ...inner };
-    if (payload.clickTrackingParams) v2.clickTrackingParams = payload.clickTrackingParams;
-    // normalize action -> actions
+    const v: any = { context, ...inner };
     if (inner.action && !inner.actions) {
-      v2.actions = [inner.action];
-      delete v2.action;
+      v.actions = [inner.action];
+      delete v.action;
     }
-    variants.push(v2);
-    // variant 2b: with actions wrapper explicitly
-    if (inner.actions) variants.push({ context, actions: inner.actions, clickTrackingParams: payload.clickTrackingParams });
+    if (payload.clickTrackingParams) v.clickTrackingParams = payload.clickTrackingParams;
+    variants.push(v);
+    if (inner.actions) {
+      const v2b: any = { context, actions: inner.actions };
+      if (payload.clickTrackingParams) v2b.clickTrackingParams = payload.clickTrackingParams;
+      if (!variants.some((v) => JSON.stringify(v) === JSON.stringify(v2b))) variants.push(v2b);
+    }
   }
-  // variant 3: if payload already has actions/action at top level, ensure actions array form
+  // raw spread (endpoint wrapper / metadata included) — current schema
+  // rejects it, but keeps the loop honest if youtube reshapes again
+  const raw: any = { context, ...payload };
+  if (!variants.some((v) => JSON.stringify(v) === JSON.stringify(raw))) variants.push(raw);
+  // top-level action/actions already present in payload
   if (payload.actions || payload.action) {
     const v3: any = { context, ...payload };
     if (payload.action && !payload.actions) {
@@ -262,6 +273,13 @@ export async function performCommentAction(likeCommand: any, signal?: AbortSigna
           continue;
         }
         throw new Error(msg);
+      }
+      if (i > 0) {
+        warnOnce(
+          'perform-comment-variant',
+          `primary body shape was rejected — like succeeded on fallback body variant ${i + 1}/${variants.length}. last primary error:`,
+          lastErr,
+        );
       }
       return json;
     }

@@ -105,8 +105,13 @@ function createButton(onClick: () => void): HTMLElement {
     </button>
   `;
 
-  const btn = shape.querySelector('button')!;
-  btn.addEventListener('click', (event) => {
+  // listener on the SHAPE, not the inner button: a click landing on the
+  // shape's own padding (or any synthetic .click() on the shape) has no
+  // listener on the inner button, bubbles straight into yt's
+  // ytVideoActionBarViewModelHost when the miniplayer anchor is used, and
+  // that handler routes watch -> / within ~1ms. stopping at the shape
+  // covers inner-button clicks (they bubble through it) and shape clicks.
+  shape.addEventListener('click', (event) => {
     event.preventDefault();
     event.stopPropagation();
     onClick();
