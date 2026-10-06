@@ -10,8 +10,10 @@ A speech-bubble icon shows up in the player bar between the like button and
 the three-dot menu. Click it and a drawer slides up with the comments of the
 track playing right now.
 
-Read-only: you can browse, sort Top / Newest, and expand replies. You can't
-post or like — that would need real auth and isn't what this is for.
+Read and like: browse, sort Top / Newest, expand replies, and like any
+comment or reply from your own signed-in YouTube session. You still can't
+post new comments — writing would need a different endpoint and isn't what
+this is for.
 
 **Heads up — current limitation:** the button only shows comments when the
 track has a real YouTube video counterpart (i.e. music videos). For
@@ -68,6 +70,10 @@ itself hits when you open a video. Two calls per track: first
 `{continuation: token}` for the first page. CORS works because the manifest
 declares `host_permissions` for `youtube.com`, and the user's existing
 YouTube cookies are sent so locale and personalised like state come through.
+Each request also carries a `SAPISIDHASH` auth header derived from the page's
+own origin — that header is what makes YouTube hand over the like commands
+alongside the comments at all; unauthenticated asks get the comments without
+them.
 
 Track changes inside YT Music are picked up via WXT's `wxt:locationchange`
 event. The videoId in `music.youtube.com/watch?v=…` is the same string as
@@ -78,21 +84,22 @@ on regular YouTube, so reading `?v=` is enough — no mapping.
 - `entrypoints/ytm.content/` — content script, Vue root
 - `components/` — drawer, comment list, item, replies, sort menu
 - `composables/` — `useVideoId`, `useComments`, `useReplies`, `usePlayerBarButton`
-- `lib/` — `youtubeApi.ts`, `clientContext.ts`, parsers, types
+- `lib/` — `youtubeApi.ts`, `auth.ts`, `clientContext.ts`, parsers, types
 
 The most fragile file is `lib/parseComments.ts`. YouTube reshapes the JSON
 paths a few times a year, so every hop is `?.` chained.
 
 ## Things that can break
 
-- The hard-coded `clientVersion` gets rejected. `clientContext.ts` falls back
-  to scraping the live value from `https://www.youtube.com/` and caches it
-  in session storage.
+- The hard-coded `clientVersion` gets rejected. `clientContext.ts` scrapes
+  the live value from the current page itself (the www homepage is
+  CORS-blocked from a content script), rewrites the music client to the web
+  client that serves comments, and caches it in session storage.
 - Some tracks have comments off or are pure-audio uploads with no public
   YouTube video — the drawer is empty in that case. See the heads-up at the
   top.
-- Signed out: read still works, just no personalised like state on each
-  comment.
+- Signed out: reading still works, just no personalised like state on each
+  comment — gated comments show "Sign in to like" instead of a like button.
 
 ## License
 
