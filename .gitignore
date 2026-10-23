@@ -24,9 +24,3 @@ web-ext.config.ts
 *.njsproj
 *.sln
 *.sw?
-
-# dev-only reloader (local unpacked reload loop, not part of the extension)
-entrypoints/background.ts
-public/reload.html
-public/reload.js
-tools/
